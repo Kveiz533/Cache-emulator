@@ -230,6 +230,15 @@ class Cache_BitPLRU {
         void LoadByteInToRAM(uint32_t index, uint8_t byte) {
             ram_.LoadByteInToRAM(index, byte);
         }
+
+        bool AllOne(uint8_t index) {
+            int cnt = 0;
+            for (int i = 0; i < CACHE_WAY; i++) {
+                cnt += cache_memory_[index][i].mru_bit;
+            }
+
+            return (cnt == CACHE_WAY);
+        }
         
         void LoadBytesInToRAM(uint64_t address, std::vector<uint8_t> data) {
             uint8_t tag = (address >> (CACHE_INDEX_LEN + CACHE_OFFSET_LEN)) & (uint64_t) (std::pow(2, CACHE_INDEX_LEN + CACHE_OFFSET_LEN) - 1);
@@ -240,7 +249,6 @@ class Cache_BitPLRU {
             bool is_found = false;
             int index_to_place = -1;
             int index_to_erase = -1;
-            int all_one = 0;
 
             for (int i = 0; i < CACHE_WAY; i++) {
                 if (cache_memory_[index][i].valid && cache_memory_[index][i].cache_tag == tag) { // нахождение строки с таким же тегом
@@ -255,6 +263,15 @@ class Cache_BitPLRU {
                     cache_memory_[index][i].dirty = true;
                     cache_memory_[index][i].mru_bit = 1;
 
+                    if (AllOne(index)) {
+                        for (int j = 0; j < CACHE_WAY; j++) {
+                            if (j != i) {
+                                cache_memory_[index][j].mru_bit = 0;
+                            }
+                        }
+                    }
+
+                    break;
                 }
 
                 if (!cache_memory_[index][i].valid && index_to_place == -1) { // нахождение свободного места
@@ -265,36 +282,47 @@ class Cache_BitPLRU {
                     index_to_erase = i;
                 }
 
-                all_one += cache_memory_[index][i].mru_bit;
             }
 
-            if (!is_found) {
+            if (!is_found && index_to_place != -1) {
                 miss_data_++;
 
-                int target_index = (index_to_place != -1) ? index_to_place : index_to_erase;
+                LoadCacheLine(index, index_to_place, ram_address);
+                for (int j = offset; j < offset + data.size(); j++) { // записываем данные
+                    cache_memory_[index][index_to_place].cache_line_memory[j] = data[j - offset];
+                }
 
-                if (all_one == CACHE_WAY) {
-                    target_index = 0;
-                    index_to_erase = 0;
+                cache_memory_[index][index_to_place].dirty = true;
 
-                    for (int i = 0; i < CACHE_WAY; i++) {
-                        cache_memory_[index][i].mru_bit = 0;
+
+                if (AllOne(index)) {
+                    for (int j = 0; j < CACHE_WAY; j++) {
+                        if (j != index_to_place) {
+                            cache_memory_[index][j].mru_bit = 0;
+                        }
                     }
                 }
-                
-                if (target_index == index_to_erase && cache_memory_[index][target_index].dirty) { // вытеснение dirty-строки
-                    UpdateCacheLine(index, target_index);
-                }
-    
-                LoadCacheLine(index, target_index, ram_address); // загрузка строки
+
+            } else if (!is_found) {
+                miss_data_++;
+                UpdateCacheLine(index, index_to_erase);
+                LoadCacheLine(index, index_to_erase, ram_address); // загрузка строки
                 
                 for (int j = offset; j < offset + data.size(); j++) { // записываем данные
-                    cache_memory_[index][target_index].cache_line_memory[j] = data[j - offset];
+                    cache_memory_[index][index_to_erase].cache_line_memory[j] = data[j - offset];
                 }
 
-                cache_memory_[index][target_index].dirty = true;
-            }
+                cache_memory_[index][index_to_erase].dirty = true;
 
+
+                if (AllOne(index)) {
+                    for (int j = 0; j < CACHE_WAY; j++) {
+                        if (j != index_to_erase) {
+                            cache_memory_[index][j].mru_bit = 0;
+                        }
+                    }
+                }
+            }
         }
 
         std::vector<uint8_t> LoadBytesFromRAM(uint64_t address, int bytes_amount, bool is_instr = false) {
@@ -326,6 +354,16 @@ class Cache_BitPLRU {
                     }
 
                     cache_memory_[index][i].mru_bit = 1;
+
+                    if (AllOne(index)) {
+                        for (int j = 0; j < CACHE_WAY; j++) {
+                            if (j != i) {
+                                cache_memory_[index][j].mru_bit = 0;
+                            }
+                        }
+                    }
+
+                    break;
                 }
 
                 if (!cache_memory_[index][i].valid && index_to_place == -1) { // нахождение свободного места
@@ -339,36 +377,54 @@ class Cache_BitPLRU {
                 all_one += cache_memory_[index][i].mru_bit;
             }
 
-            if (!is_found) {
 
+             if (!is_found && index_to_place != -1) {
                 if (is_instr) {
                     miss_instr_++;
                 } else {
                     miss_data_++;
                 }
 
-                int target_index = (index_to_place != -1) ? index_to_place : index_to_erase;
+                LoadCacheLine(index, index_to_place, ram_address);
+                for (int j = offset; j < offset + bytes_amount; j++) { // записываем данные
+                    bytes[j - offset] = cache_memory_[index][index_to_place].cache_line_memory[j];
+                }
 
-                if (all_one == CACHE_WAY) {
-                    target_index = 0;
-                    index_to_erase = 0;
+                cache_memory_[index][index_to_place].dirty = true;
 
-                    for (int i = 0; i < CACHE_WAY; i++) {
-                        cache_memory_[index][i].mru_bit = 0;
+
+                if (AllOne(index)) {
+                    for (int j = 0; j < CACHE_WAY; j++) {
+                        if (j != index_to_place) {
+                            cache_memory_[index][j].mru_bit = 0;
+                        }
                     }
                 }
-                
-                if (target_index == index_to_erase && cache_memory_[index][target_index].dirty) { // вытеснение dirty-строки
-                    UpdateCacheLine(index, target_index);
+
+            } else if (!is_found) {
+                if (is_instr) {
+                    miss_instr_++;
+                } else {
+                    miss_data_++;
                 }
-    
-                LoadCacheLine(index, target_index, ram_address); // загрузка строки
+                UpdateCacheLine(index, index_to_erase);
+                LoadCacheLine(index, index_to_erase, ram_address); // загрузка строки
                 
                 for (int j = offset; j < offset + bytes_amount; j++) { // записываем данные
-                    bytes[j - offset] = cache_memory_[index][target_index].cache_line_memory[j];
+                    bytes[j - offset] = cache_memory_[index][index_to_erase].cache_line_memory[j];
+                }
+
+                cache_memory_[index][index_to_erase].dirty = true;
+
+
+                if (AllOne(index)) {
+                    for (int j = 0; j < CACHE_WAY; j++) {
+                        if (j != index_to_erase) {
+                            cache_memory_[index][j].mru_bit = 0;
+                        }
+                    }
                 }
             }
-    
             return bytes;
         }
 
